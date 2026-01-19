@@ -1,0 +1,426 @@
+<!doctype html>
+<html lang="ar">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>ROZALINDA</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: #000;
+      overflow: hidden;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    }
+    canvas { display:block; }
+    .hint {
+      position: fixed;
+      left: 16px;
+      bottom: 16px;
+      color: rgba(255,255,255,.55);
+      font-size: 12px;
+      user-select: none;
+      pointer-events: none;
+      letter-spacing: .2px;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <div class="hint">Enter: Fullscreen • Space: Restart • حرّك الماوس للتفاعل</div>
+
+<script>
+(() => {
+  const canvas = document.getElementById("c");
+  const ctx = canvas.getContext("2d");
+
+  let W, H, dpr;
+  function resize() {
+    dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+    W = Math.floor(window.innerWidth);
+    H = Math.floor(window.innerHeight);
+    canvas.width = Math.floor(W * dpr);
+    canvas.height = Math.floor(H * dpr);
+    canvas.style.width = W + "px";
+    canvas.style.height = H + "px";
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  window.addEventListener("resize", resize);
+
+  // --- FX/state ---
+  let startTime = 0;
+  let phase = 0;     // 0 draw heart, 1 show text
+  let progress = 0;
+
+  let mouseX = 0.5, mouseY = 0.5;
+  let lastMove = performance.now();
+  let flash = 0;
+  let shake = 0;
+  let typedCount = 0;
+
+  const NAME = "ROZALINDA";
+  const SUB  = "بحبك";
+
+  window.addEventListener("mousemove", (e) => {
+    mouseX = e.clientX / Math.max(1, W);
+    mouseY = e.clientY / Math.max(1, H);
+    lastMove = performance.now();
+    document.body.style.cursor = "default";
+  });
+
+  function updateCursor(now){
+    if (now - lastMove > 1200) document.body.style.cursor = "none";
+  }
+
+  // ---------- Heart path (parametric) ----------
+  function heartPoint(t) {
+    const x = 16 * Math.pow(Math.sin(t), 3);
+    const y = 13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t);
+    return { x, y };
+  }
+
+  // Precompute points
+  let pts = [];
+  function buildHeart() {
+    pts = [];
+    const steps = 900;
+    for (let i = 0; i <= steps; i++) {
+      const t = (i / steps) * Math.PI * 2;
+      pts.push(heartPoint(t));
+    }
+  }
+
+  function fitTransform() {
+    // bounds
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const p of pts) {
+      minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+      minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
+    }
+
+    const scale = Math.min(W, H) * 0.025;
+
+    // parallax (mouse)
+    const px = (mouseX - 0.5) * 26;
+    const py = (mouseY - 0.5) * 18;
+
+    const cx = W * 0.5 + px;
+    const cy = H * 0.46 + py;
+
+    return { minX, minY, scale, cx, cy };
+  }
+
+  // ---------- Particles (mini hearts) ----------
+  const particles = [];
+  function spawnParticles(n, x, y) {
+    for (let i = 0; i < n; i++) {
+      particles.push({
+        x, y,
+        vx: (Math.random() - 0.5) * 3.2,
+        vy: (Math.random() - 0.5) * 3.2 - 0.6,
+        life: 60 + Math.random() * 50,
+        r: 1 + Math.random() * 2.2,
+        hue: 300 + Math.random() * 80,
+      });
+    }
+  }
+
+  function updateParticles() {
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vx *= 0.985;
+      p.vy *= 0.985;
+      p.vy += 0.01;
+      p.life -= 1;
+      if (p.life <= 0) particles.splice(i, 1);
+    }
+  }
+
+  function drawMiniHeart(x, y, s) {
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.bezierCurveTo(x - s, y - s, x - s*2, y + s/2, x, y + s*2);
+    ctx.bezierCurveTo(x + s*2, y + s/2, x + s, y - s, x, y);
+    ctx.fill();
+  }
+
+  function drawParticles() {
+    for (const p of particles) {
+      const a = Math.max(0, Math.min(1, p.life / 110));
+      ctx.fillStyle = `hsla(${p.hue}, 100%, 65%, ${0.85 * a})`;
+      drawMiniHeart(p.x, p.y, p.r * 1.8);
+    }
+  }
+
+  // ---------- Background glow (animated hues) ----------
+  function drawBackgroundGlow(t) {
+    const pulse = 0.5 + 0.5 * Math.sin(t * 0.0015);
+    const hue = (t * 0.02) % 360;
+    const r = Math.min(W, H) * (0.55 + pulse * 0.06);
+
+    const g = ctx.createRadialGradient(
+      W * 0.5, H * 0.45, 0,
+      W * 0.5, H * 0.45, r
+    );
+
+    g.addColorStop(0,   `hsla(${(hue + 320) % 360}, 100%, 60%, ${0.12 + pulse * 0.06})`);
+    g.addColorStop(0.5, `hsla(${(hue + 260) % 360}, 100%, 65%, ${0.09 + pulse * 0.04})`);
+    g.addColorStop(1,   "rgba(0,0,0,0)");
+
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  // ---------- Heart drawing ----------
+  function drawHeart(progress01, timeMs) {
+    const { minX, minY, scale, cx, cy } = fitTransform();
+
+    // gradient stroke
+    const grad = ctx.createLinearGradient(cx - 220, cy - 220, cx + 220, cy + 220);
+    grad.addColorStop(0, "rgba(255, 40, 160, 1)");
+    grad.addColorStop(0.5, "rgba(255, 70, 70, 1)");
+    grad.addColorStop(1, "rgba(120, 120, 255, 1)");
+
+    ctx.save();
+    ctx.translate(cx, cy);
+
+    // dub-dub heartbeat (applied to heart only)
+    const s = Math.sin(timeMs * 0.006);
+    const dub  = Math.pow(Math.max(0, s), 2);
+    const dub2 = Math.pow(Math.max(0, Math.sin(timeMs * 0.006 + 1.2)), 3) * 0.6;
+    const beat = 1 + (dub + dub2) * 0.06;
+
+    ctx.scale(scale * beat, -scale * beat);
+
+    const total = pts.length;
+    const end = Math.max(2, Math.floor(progress01 * (total - 1)));
+
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.beginPath();
+    for (let i = 0; i < end; i++) {
+      const p = pts[i];
+      const x = (p.x - minX - 16);
+      const y = (p.y - minY - 14);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+
+    // neon glow layers
+    ctx.strokeStyle = "rgba(255, 40, 160, 0.18)";
+    ctx.lineWidth = 2.6;
+    ctx.shadowColor = "rgba(255, 40, 160, 0.9)";
+    ctx.shadowBlur = 18;
+    ctx.stroke();
+
+    ctx.strokeStyle = "rgba(120, 120, 255, 0.12)";
+    ctx.lineWidth = 2.2;
+    ctx.shadowColor = "rgba(120, 120, 255, 0.85)";
+    ctx.shadowBlur = 22;
+    ctx.stroke();
+
+    // main stroke
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = grad;
+    ctx.lineWidth = 1.35;
+    ctx.stroke();
+
+    // spark trail at end
+    if (end > 5) {
+      const pe = pts[end-1];
+      const xe = (pe.x - minX - 16) * scale * beat + cx;
+      const ye = cy - (pe.y - minY - 14) * scale * beat;
+      spawnParticles(2, xe, ye);
+    }
+
+    ctx.restore();
+  }
+
+  // ---------- Text ----------
+  function easeOutCubic(x){ return 1 - Math.pow(1-x, 3); }
+  function easeOutBack(x){
+    const c1 = 1.70158, c3 = c1 + 1;
+    return 1 + c3*Math.pow(x-1,3) + c1*Math.pow(x-1,2);
+  }
+
+  function drawText(pop, timeMs) {
+    const x = W * 0.5;
+    const y = H * 0.68;
+
+    const s = 0.92 + 0.18 * pop;
+    const alpha = Math.min(1, pop);
+
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(s, s);
+
+    // Text gradient
+    const tg = ctx.createLinearGradient(-220, 0, 220, 0);
+    tg.addColorStop(0, "rgba(255, 40, 160, 1)");
+    tg.addColorStop(0.5, "rgba(255, 255, 255, 1)");
+    tg.addColorStop(1, "rgba(120, 120, 255, 1)");
+
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+
+    // --- typewriter ---
+    const speed = 12; // letters/sec
+    typedCount = Math.min(NAME.length, Math.floor((timeMs * 0.001) * speed));
+    const shown = NAME.slice(0, Math.max(1, typedCount));
+
+    // glow base
+    ctx.shadowColor = "rgba(255, 40, 160, 0.9)";
+    ctx.shadowBlur = 24;
+    ctx.globalAlpha = 0.55 * alpha;
+    ctx.fillStyle = "rgba(255, 40, 160, 1)";
+    ctx.font = "900 110px system-ui, -apple-system, Segoe UI, Roboto, Arial";
+    ctx.fillText(shown, 0, 0);
+
+    // crisp top
+    ctx.shadowBlur = 0;
+    ctx.globalAlpha = 1 * alpha;
+    ctx.fillStyle = tg;
+    ctx.font = "900 104px system-ui, -apple-system, Segoe UI, Roboto, Arial";
+    ctx.fillText(shown, 0, 0);
+
+    // chromatic split (modern)
+    ctx.globalAlpha = 0.55 * alpha;
+    ctx.fillStyle = "rgba(255,60,60,0.9)";
+    ctx.fillText(shown, -2, 0);
+    ctx.fillStyle = "rgba(80,160,255,0.9)";
+    ctx.fillText(shown, 2, 0);
+    ctx.globalAlpha = 1 * alpha;
+
+    // subtitle: بحبك (pulse + outline)
+    const pulse = 1 + Math.sin(timeMs * 0.004) * 0.08;
+
+    ctx.save();
+    ctx.translate(0, 98);
+    ctx.scale(pulse, pulse);
+
+    ctx.globalAlpha = 0.95 * alpha;
+    ctx.font = "800 36px system-ui, -apple-system, Segoe UI, Roboto, Arial";
+    ctx.fillStyle = "rgba(255, 230, 240, 1)";
+
+    ctx.shadowColor = "rgba(255, 80, 160, 0.9)";
+    ctx.shadowBlur = 18;
+
+    ctx.lineWidth = 6;
+    ctx.strokeStyle = "rgba(0,0,0,0.85)";
+    ctx.strokeText(SUB, 0, 0);
+
+    ctx.fillText(SUB, 0, 0);
+
+    ctx.restore();
+    ctx.restore();
+  }
+
+  function reset() {
+    startTime = performance.now();
+    phase = 0;
+    progress = 0;
+    flash = 0;
+    shake = 0;
+    typedCount = 0;
+    particles.length = 0;
+  }
+
+  function frame(now) {
+    updateCursor(now);
+
+    // base frame
+    ctx.fillStyle = "rgba(0,0,0,1)";
+    ctx.fillRect(0,0,W,H);
+
+    // shake update (for the whole scene)
+    let sh = 0, sv = 0;
+    if (shake > 0) {
+      sh = Math.sin(now * 0.08) * 6 * shake;
+      sv = Math.cos(now * 0.07) * 4 * shake;
+      shake *= 0.92;
+    }
+
+    ctx.save();
+    ctx.translate(sh, sv);
+
+    drawBackgroundGlow(now);
+
+    const t = now - startTime;
+    const heartDur = 1500;
+    const textDelay = 180;
+    const textDur = 650;
+
+    if (phase === 0) {
+      progress = Math.min(1, t / heartDur);
+      drawHeart(easeOutCubic(progress), now);
+
+      if (progress >= 1) {
+        phase = 1;
+        flash = 1;
+        shake = 1;
+        typedCount = 0;
+        spawnParticles(180, W*0.5, H*0.48);
+      }
+    } else {
+      drawHeart(1, now);
+
+      const tt = Math.max(0, t - heartDur - textDelay);
+      const pop = Math.min(1, tt / textDur);
+      drawText(easeOutBack(pop), now);
+
+      if (Math.random() < 0.25) {
+        spawnParticles(2,
+          W*0.5 + (Math.random()-0.5)*240,
+          H*0.48 + (Math.random()-0.5)*160
+        );
+      }
+    }
+
+    updateParticles();
+    drawParticles();
+
+    // flash overlay
+    if (flash > 0) {
+      ctx.fillStyle = `rgba(255,255,255,${0.35 * flash})`;
+      ctx.fillRect(-sh, -sv, W, H);
+      flash *= 0.85;
+    }
+
+    ctx.restore();
+
+    requestAnimationFrame(frame);
+  }
+
+  // Start
+  resize();
+  buildHeart();
+  reset();
+  requestAnimationFrame(frame);
+
+  // controls
+  window.addEventListener("keydown", async (e) => {
+  if (e.code === "Space") {
+    e.preventDefault();   // ⬅️ هذا هو الحل
+    reset();
+  }
+
+  if (e.code === "Enter") {
+    e.preventDefault();   // ⬅️ ويفضّل كمان هنا
+    try {
+      if (!document.fullscreenElement) {
+        await document.documentElement.requestFullscreen();
+      } else {
+        await document.exitFullscreen();
+      }
+    } catch (err) {
+      console.log(err);
+    }
+  }
+});
+
+})();
+</script>
+</body>
+</html>
